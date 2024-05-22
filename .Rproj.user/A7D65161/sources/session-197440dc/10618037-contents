@@ -1,0 +1,182 @@
+library(data.table)  
+library(dplyr)
+library(ggplot2)
+library(factoextra)
+#library(dbnR)
+library(caret)
+library(zoo)
+library(pamr)
+library(animation)
+library(FeatureImpCluster)
+library(flexclust)
+library(gridExtra)
+library(sf)
+library(RColorBrewer)
+
+
+
+#--------------STEP ONE - data prep
+
+
+
+setwd("/mnt/ceph/erichs/git/PIPP_33cities")
+files <- list.files(path = "./data/33cities/", pattern = ".csv")
+setwd("/mnt/ceph/erichs/git/PIPP_33cities/data/33cities/")
+temp <- lapply(files, fread, sep=",")
+data <- rbindlist( temp )
+
+#reduce cities to three for visualization
+
+data2 <- subset(data, city == c("san francisco", "austin", "atlanta"))
+data_aggregate <- aggregate(data$hospitalizatoin, list(data$time), FUN=sum)
+colnames(data_aggregate) <- c("time", "hospitalizations")
+data_aggregate %>%
+  ggplot( aes(x=time, y=hospitalizations)) +
+  geom_line() + theme_bw()
+
+
+#select mean values and add city as rowname
+data_mean_prep <- data
+data_mean <- select(data_mean_prep, contains("mean"))
+
+data_mean$time <- data$time
+data_mean$city <- data$city
+
+#data_timepoint <- data_mean[time == "2020-02-05",]
+
+#rollingmeanDF <- data.frame(group = c(1, 1, 1, 2, 2, 2), value1 = 1:6, value2 = 7:12)
+
+citynames <- unique(data_mean$city)
+
+cityfinal <- NULL
+for (i in citynames) {
+ 
+  cityone <- data_mean[data_mean$city == i,] 
+  cityone_mean <- rollapply(cityone[,1:73], 14, mean, na.rm = TRUE, fill = NA)
+  
+  cityfinal <- rbind(cityfinal, cityone_mean)
+}
+
+cityfinal <- cbind(cityfinal, data_mean[,74:75])
+
+#data_timepoint <- cityfinal[cityfinal$time == "2020-11-07" | cityfinal$time == "2020-11-08"| cityfinal$time == "2020-11-09"| cityfinal$time == "2020-11-10"| cityfinal$time == "2020-11-11",]
+
+daterangez <- unique(cityfinal$time)
+daterangez <- daterangez[15:length(daterangez)-7]
+
+
+
+#--------------STEP TWO - clustering for each time point
+
+
+
+
+#----animate LIWC by city over time using gganimate
+
+#library(gapminder)
+library(gganimate)
+library(lubridate)
+
+cityfinal_gganimate <- cityfinal[7:28163,]
+cfg <- as_tibble(cityfinal_gganimate)
+cfg <- cfg[,c(1:4,69:75)]
+
+#---dcast
+
+cfg_new <- cfg
+colnames(cfg_new) <- c("Analytic", "Clout", "Authentic", "Tone", "Masking", "COVID", "Hospitalizations", "Vaccinations", "Policy", "Time", "City")
+library(reshape2)
+library(stringr)
+
+DT.m1 = melt(cfg_new, id.vars = c("Masking", "COVID", "Hospitalizations", "Vaccinations", "Policy", "Time", "City"), measure.vars = c("Analytic", "Clout", "Authentic", "Tone"))
+
+setwd("/mnt/ceph/erichs/git/PIPP_33cities/")
+city_pop <- read.csv("./data/city_pop.csv")
+colnames(city_pop) <- c("City", "county")
+city_pop$county[15] <- "Orleans Parish"
+USpop <- read.csv("./data/US_population_county_ACS_2018_5yr.csv")
+
+
+USpop[c('county', 'state')] <- str_split_fixed(USpop$Geographic.Area.Name, ',', 2)
+USpop2 <- merge(city_pop, USpop, by="county")
+#remove duplicate counties
+USpop2 <- USpop2[c(1,7,15,20,23,24,30,34,35,36,39,40,41,45,50,51,53,54,55,56,57,59,60,99,107),]
+
+#--fips of just the counties we want
+# fips_refined <- fips
+# names(fips_refined)[names(fips_refined) == 'GEO.display.label'] <- 'state'
+# test <- fips_refined[fips_refined$GCT == c("0500000US24005","0500000US21049","0500000US17031","0500000US48113","0500000US47037",        
+# "0500000US08031","0500000US39051","0500000US13145","0500000US27053","0500000US12057","0500000US53033","0500000US06037",    
+# "0500000US04013","0500000US12095","0500000US22071","0500000US42101","0500000US27123","0500000US49035",            
+# "0500000US06073","0500000US06075","0500000US36103","0500000US48453","0500000US37183","0500000US26163","0500000US20209")]
+
+#USpop_fips <- USpop2 %>% inner_join(fips_refined, by=c("county","state"))
+
+#---end
+
+
+cfg_new2 <- merge(cfg_new, city_pop, by="City")
+cfg_new3 <- merge(cfg_new2, USpop2, by="county")
+cfg_new3$absolute_hospitalizations <- cfg_new3$Hospitalizations * cfg_new3$Estimate..Total
+
+deaths <- read.csv("./data/deaths_nationwide_cumulative.csv")
+colnames(deaths) <- c("Time", "FIPS", "deaths", "daily_deaths")
+deaths$Time <- as.character(deaths$Time)
+fips <- read.csv("./data/Population-Density By County.csv")
+colnames(fips) <- c("GEO.id", "GEO.id2", "GEO.display.label", "GCT", "FIPS", "county", "density")
+
+cfg_new4 <- merge(cfg_new3, fips, by ="county")
+
+cfg_new4a <- cfg_new4[c(1:12,16,18,23)]
+cfg_new4a$Time <- as.character(cfg_new4a$Time)
+
+
+new_dataset <- cfg_new4a %>% inner_join(deaths, by=c("FIPS","Time"))
+
+#cfg_new5 <- merge(cfg_new4, deaths, by = "FIPS")
+
+
+DT.m2 = melt(new_dataset, id.vars = c("county", "Masking", "COVID", "Hospitalizations", "Vaccinations", "Policy", "Time", "City.x", "absolute_hospitalizations", "Estimate..Total", "deaths", "FIPS"), measure.vars = c("Analytic", "Clout", "Authentic", "Tone"))
+
+DT.m3 <- DT.m2[order(DT.m2$Time), ]
+
+DT.m3$Time <- as.Date(DT.m3$Time)
+
+vaccine <- read.csv("./data/vaccinationrate.csv", stringsAsFactors = FALSE)
+vaccine$FIPS <- as.integer(vaccine$FIPS)
+vaccine2 <- vaccine %>% dplyr::mutate(Time = as.Date(anytime::anydate(Date)))
+DT <- DT.m3 %>% inner_join(vaccine2, by=c("FIPS", "Time"))
+
+library(stringr)
+USpop2$FIPS <- str_sub(USpop2$id, 10)
+DT2 <- merge(USpop2, DT, by="FIPS")
+
+#test %>% mutate(cum_hos = cumsum(absolute_hospitalizations))
+
+library(gapminder)
+
+
+p1 <- ggplot(DT2, aes(Series_Complete_Pop_Pct, deaths/Estimate..Total.x, size = value, colour = variable)) +
+  geom_point(alpha = 0.7, show.legend = FALSE) +
+  scale_colour_manual(values = c("red", "green", "blue", "magenta", "red", "green", "blue", "magenta","red", "green", "blue", "magenta","red", "green", "blue", "magenta","red", "green", "blue", "magenta")) +
+  scale_size(range = c(2, 12)) +
+  # Here comes the gganimate specific bits
+  labs(title = 'Date: {frame_time}', x = 'LIWC percentage', y = 'Vaccination Rate') +
+  transition_time(Time) +
+  ease_aes('linear') +
+  shadow_wake(wake_length = 0.1, alpha = FALSE)
+
+p2 <- ggplot(DT2, aes(deaths/Estimate..Total.x, value, size = Series_Complete_Pop_Pct, colour = variable)) +
+  geom_point(alpha = 0.7, show.legend = FALSE) +
+  scale_colour_manual(values = c("red", "green", "blue", "magenta", "red", "green", "blue", "magenta","red", "green", "blue", "magenta","red", "green", "blue", "magenta","red", "green", "blue", "magenta")) +
+  scale_size(range = c(2, 12)) +
+  # Here comes the gganimate specific bits
+  labs(title = 'Date: {frame_time}', x = 'LIWC percentage', y = 'Vaccination Rate') +
+  transition_time(Time) +
+  ease_aes('linear') +
+  shadow_wake(wake_length = 0.1, alpha = FALSE)
+
+grid.arrange(p1, p2, nrow = 1)
+
+
+#scale_colour_manual(values = c("red", "green", "blue", "magenta", "red", "green", "blue", "magenta", "red", "green", "blue", "magenta", "red", "green", "blue", "magenta", "red", "green", "blue", "magenta", "red", "green", "blue", "magenta", "red", "green", "blue" )) +
